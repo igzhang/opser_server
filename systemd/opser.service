@@ -1,0 +1,12 @@
+[Unit]
+Description=opser_server
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/opsers
+Environment="dsn=user:pass@tcp(127.0.0.1:3306)/dbname?charset=utf8mb4&parseTime=True&loc=Local"
+Environment="PORT=8080"
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
