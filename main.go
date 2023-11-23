@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -25,6 +26,7 @@ var (
 	jobStateExecSucceeded = 1
 	jobStateExecFailed    = 2
 )
+var OnlineConn = make(map[string]time.Time)
 
 type Cmd struct {
 	ID      uint   `json:"id"`
@@ -55,6 +57,7 @@ type ECSTagDB struct {
 type CmdRequest struct {
 	Tagname string `form:"ecs"`
 	Cmd     string `form:"cmd"`
+	Token   string `form:"token"`
 }
 
 func QueryNextJob(hostname string) *Cmd {
@@ -89,6 +92,10 @@ func handleWebSocket(c *gin.Context) {
 		return
 	}
 	defer conn.Close()
+	conn.SetPingHandler(func(hostname string) error {
+		OnlineConn[hostname] = time.Now()
+		return nil
+	})
 
 	for {
 		var cmdResult CmdResult
@@ -115,7 +122,7 @@ func handleWebSocket(c *gin.Context) {
 func InitDB() error {
 	var err error
 
-	dsn := os.Getenv("dsn")
+	dsn := os.Getenv("DSN")
 	if len(dsn) == 0 {
 		return errors.New("env dsn not found")
 	}
@@ -146,6 +153,12 @@ func handleSendCmdDirect(c *gin.Context) {
 		return
 	}
 
+	token := os.Getenv("TOKEN")
+	if token != cmdRequest.Token {
+		c.AbortWithStatus(http.StatusUnauthorized)
+		return
+	}
+
 	var ecsTagDB ECSTagDB
 	if result := db.Where("tagname = ?", cmdRequest.Tagname).First(&ecsTagDB); errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		c.AbortWithError(http.StatusBadRequest, errors.New("tagname not found"))
@@ -160,6 +173,26 @@ func handleSendCmdDirect(c *gin.Context) {
 	c.String(http.StatusOK, "get it")
 }
 
+func handleOnlineConn(c *gin.Context) {
+	endTime := time.Now().Add(-30 * time.Second)
+	unactiveConn := []string{}
+
+	for host, connTime := range OnlineConn {
+		if connTime.Before(endTime) {
+			unactiveConn = append(unactiveConn, host)
+		}
+	}
+
+	for _, v := range unactiveConn {
+		delete(OnlineConn, v)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"count": len(OnlineConn),
+		"list":  OnlineConn,
+	})
+}
+
 func main() {
 	log.Println("start connect to database")
 	if err := InitDB(); err != nil {
@@ -169,6 +202,7 @@ func main() {
 	log.Println("start webserver")
 	r := gin.Default()
 	r.GET("/ws", handleWebSocket)
+	r.GET("/online", handleOnlineConn)
 	r.POST("/cmd", handleSendCmdDirect)
 
 	r.Run()
